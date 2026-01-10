@@ -2,6 +2,59 @@
 
 A comprehensive Model Context Protocol (MCP) server that enables AI assistants like Claude to interact with Facebook/Instagram advertising data through the Meta Marketing API. This server provides full campaign lifecycle management, analytics, audience targeting, and creative optimization capabilities.
 
+## ⚡ Quick Start
+
+### 1) Install
+```bash
+npm install -g meta-ads-mcp
+```
+
+### 2) Configure (Claude Desktop / Cursor)
+Create or edit your MCP config:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Linux**: `~/.config/Claude/claude_desktop_config.json`
+
+Minimal config:
+```json
+{
+  "mcpServers": {
+    "meta-ads": {
+      "command": "npx",
+      "args": ["-y", "meta-ads-mcp"],
+      "env": {
+        "META_ACCESS_TOKEN": "your_access_token_here"
+      }
+    }
+  }
+}
+```
+
+If your app requires `appsecret_proof`, add `META_APP_SECRET`:
+```json
+{
+  "mcpServers": {
+    "meta-ads": {
+      "command": "npx",
+      "args": ["-y", "meta-ads-mcp"],
+      "env": {
+        "META_ACCESS_TOKEN": "your_access_token_here",
+        "META_APP_SECRET": "your_app_secret"
+      }
+    }
+  }
+}
+```
+
+### 3) Restart your client
+- **Claude Desktop**: quit and reopen
+- **Cursor**: restart the IDE
+
+### 4) Verify
+```bash
+npm run health-check
+```
+
 ## 🚀 Features
 
 ### **Campaign Management**
@@ -48,7 +101,7 @@ npm install -g meta-ads-mcp
 
 ### Option 2: From Source
 ```bash
-git clone https://github.com/your-org/meta-ads-mcp.git
+git clone https://github.com/wipsoft/meta-mcp.git
 cd meta-ads-mcp
 npm install
 npm run build
@@ -57,7 +110,7 @@ npm run build
 ### Option 3: Automated Setup (Easiest)
 ```bash
 # Clone the repository first
-git clone https://github.com/your-org/meta-ads-mcp.git
+git clone https://github.com/wipsoft/meta-mcp.git
 cd meta-ads-mcp
 
 # Run the interactive setup
@@ -77,7 +130,8 @@ The setup script will:
 1. Create a Meta App at [developers.facebook.com](https://developers.facebook.com/)
 2. Add Marketing API product
 3. Generate an access token with `ads_read` and `ads_management` permissions
-4. (Optional) Set up OAuth for automatic token refresh
+4. If your app requires `appsecret_proof`, set `META_APP_SECRET` (see below)
+5. (Optional) Set up OAuth for automatic token refresh
 
 ![CleanShot 2025-06-17 at 15 52 35@2x](https://github.com/user-attachments/assets/160a260f-8f1b-44de-9041-f684a47e4a9d)
 
@@ -105,7 +159,7 @@ If the file doesn't exist, create it with the following content:
 }
 ```
 
-#### Advanced Configuration (with OAuth):
+#### Advanced Configuration (with OAuth + appsecret_proof):
 ```json
 {
   "mcpServers": {
@@ -156,9 +210,6 @@ Cursor uses the same MCP configuration as Claude Desktop. Add the configuration 
 ```bash
 # Run health check to verify everything is working
 npm run health-check
-
-# Or if installed globally
-npx meta-ads-mcp --health-check
 ```
 
 ## 🔍 Troubleshooting
@@ -196,6 +247,7 @@ curl -G \
   -d "access_token=YOUR_ACCESS_TOKEN" \
   "https://graph.facebook.com/v23.0/me/adaccounts"
 ```
+If the response says `appsecret_proof` is required, set `META_APP_SECRET` in your MCP server environment.
 
 #### 4. Check Claude Desktop logs
 - **macOS**: `~/Library/Logs/Claude/mcp*.log`
@@ -228,7 +280,7 @@ Enable debug logging by adding to your environment:
       "args": ["-y", "meta-ads-mcp"],
       "env": {
         "META_ACCESS_TOKEN": "your_access_token_here",
-        "DEBUG": "mcp:*",
+        "META_MCP_DEBUG": "1",
         "NODE_ENV": "development"
       }
     }
@@ -238,10 +290,10 @@ Enable debug logging by adding to your environment:
 
 ## 🌐 Web Deployment (Vercel)
 
-For web applications, this server is also available as a Vercel deployment with OAuth authentication:
+For web applications, you can deploy this server to Vercel and expose an HTTP MCP endpoint:
 
 ### Configuration:
-1. Deploy to Vercel or use our hosted version
+1. Deploy to Vercel
 2. Set environment variables in Vercel dashboard
 3. Configure OAuth app in Meta Developer Console
 4. Use the web endpoint: `https://your-project.vercel.app/api/mcp`
@@ -251,7 +303,7 @@ For web applications, this server is also available as a Vercel deployment with 
 {
   "mcpServers": {
     "meta-ads-remote": {
-      "url": "https://mcp.offerarc.com/api/mcp",
+      "url": "https://your-project.vercel.app/api/mcp",
       "headers": {
         "Authorization": "Bearer your_session_token"
       }
@@ -260,7 +312,7 @@ For web applications, this server is also available as a Vercel deployment with 
 }
 ```
 
-**Note**: You need to authenticate first at `https://mcp.offerarc.com/api/auth/login` to get your session token.
+**Note**: You need to authenticate against your deployment to get a session token.
 
 ### Remote MCP Configuration (mcp-remote)
 For Vercel deployments, use `mcp-remote` to bridge HTTP to stdio:
@@ -272,7 +324,7 @@ For Vercel deployments, use `mcp-remote` to bridge HTTP to stdio:
       "args": [
         "-y",
         "mcp-remote",
-        "https://mcp.offerarc.com/api/mcp",
+        "https://your-project.vercel.app/api/mcp",
         "--header",
         "Authorization:${META_AUTH_HEADER}"
       ],
@@ -438,13 +490,13 @@ META_API_VERSION=v23.0                     # API version (default: v23.0)
 META_API_TIER=standard                     # 'development' or 'standard'
 META_AUTO_REFRESH=true                     # Enable automatic token refresh
 META_REFRESH_TOKEN=your_refresh_token      # For token refresh
+META_MCP_REQUEST_TIMEOUT_MS=30000          # Request timeout in ms (0 to disable)
+META_MCP_DEBUG=1                           # Enable verbose MetaApiClient debug logs
 ```
 
 ## 📖 Documentation
 
-- **[Quick Setup Guide](SETUP_GUIDE.md)** - 5-minute setup instructions
-- **[Setup Guide](docs/setup.md)** - Complete installation and configuration
-- **[Tools Reference](docs/tools-reference.md)** - All available tools and resources
+- **All documentation is in this README** (setup, configuration, and tools)
 - **[Example Configuration](examples/claude_desktop_config.json)** - Sample configuration file
 
 ## 🏗️ Architecture
@@ -534,65 +586,11 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🆘 Support
 
-- **Documentation**: Check the [docs/](docs/) directory
+- **Documentation**: See this README
 - **Issues**: Open an issue on GitHub
 - **Meta API**: Refer to [Meta Marketing API docs](https://developers.facebook.com/docs/marketing-apis/)
 - **MCP Protocol**: See [Model Context Protocol specification](https://modelcontextprotocol.io/)
 
-## 🏷️ Version History
-
-### v1.1.0 (Latest)
-- ✅ **Complete tool suite**: 25 comprehensive tools for all Meta advertising needs
-- 🩺 **Advanced diagnostics**: Campaign readiness checking, account setup validation, and issue identification
-- 🚀 **Full campaign creation pipeline**: Campaign → Ad Set → Ads complete workflow (fully functional)
-- 🎯 **Advanced ad set targeting**: Demographics, interests, behaviors, custom audiences
-- 📱 **Individual ad management**: Create and manage ads with creative assignments
-- 🖼️ **External image URL support**: Create ad creatives using external image URLs (picture field in link_data)
-- 🔧 **Fixed campaign creation**: Added special_ad_categories parameter and missing API methods
-- 🗑️ **Removed ping tool**: Simplified tool set, health_check provides better connectivity testing
-- ✅ **Enhanced Vercel deployment**: Full web interface with OAuth authentication
-- ✅ **Advanced analytics**: Performance insights, comparison, and export tools
-- ✅ **Campaign management**: Create, update, pause, resume campaigns
-- ✅ **Audience tools**: Custom and lookalike audience creation and management
-- ✅ **Creative management**: Ad creative listing and creation tools with external URL support
-- ✅ **Improved authentication**: Session-based auth for remote deployments
-- ✅ **Better error handling**: Comprehensive TypeScript error resolution
-- ✅ Using Meta Graph API v23.0 (latest version)
-- ✅ Added support for Outcome-Driven Ad Experience (ODAE) objectives
-- ✅ Added campaign-level budget optimization support
-- ✅ Added bid strategy options (LOWEST_COST_WITHOUT_CAP, LOWEST_COST_WITH_BID_CAP, COST_CAP)
-- ✅ Removed deprecated insights metrics per Meta API v19.0 changes
-- ✅ Enhanced campaign creation with bid cap and budget optimization features
-
-### v1.0.5
-- ✅ Fixed ad set creation to use correct account endpoint
-- ✅ Improved error handling for campaign operations
-
-### v1.0.4
-- ✅ Enhanced campaign management features
-- ✅ Improved API error responses
-
-### v1.0.3
-- ✅ Added docker support
-- ✅ Improved deployment options
-
-### v1.0.2
-- ✅ Fixed entry point issue for npx compatibility
-- ✅ Added detailed startup debugging logs
-- ✅ Improved error handling and diagnostics
-
-### v1.0.1
-- ✅ Enhanced debugging capabilities
-- ✅ Better error reporting
-
-### v1.0.0
-- ✅ Complete Meta Marketing API integration
-- ✅ 40+ tools and resources
-- ✅ Advanced rate limiting
-- ✅ Comprehensive error handling
-- ✅ Multi-account support
-- ✅ Production-ready security
-
 ---
 
-**Built with ❤️ for the AI-powered advertising future**
+Built for reliable Meta Marketing API automation with MCP.

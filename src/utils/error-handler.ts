@@ -1,6 +1,42 @@
 import type { MetaApiError } from "../types/meta-api.js";
 import { RateLimitError } from "./rate-limiter.js";
 
+const RETRYABLE_NETWORK_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+]);
+
+function isTransientNetworkError(error: Error): boolean {
+  const errorCode = (error as { code?: string }).code;
+
+  return (
+    error.name === "FetchError" ||
+    error.name === "AbortError" ||
+    (errorCode ? RETRYABLE_NETWORK_ERROR_CODES.has(errorCode) : false)
+  );
+}
+
+function parseRetryAfterMs(retryAfter: string | null): number | undefined {
+  if (!retryAfter) return undefined;
+
+  const retryAfterSeconds = Number(retryAfter);
+  if (Number.isFinite(retryAfterSeconds)) {
+    return Math.max(0, retryAfterSeconds * 1000);
+  }
+
+  const retryAfterDate = Date.parse(retryAfter);
+  if (!Number.isNaN(retryAfterDate)) {
+    return Math.max(0, retryAfterDate - Date.now());
+  }
+
+  return undefined;
+}
+
 export class MetaApiErrorHandler {
   static isMetaApiError(error: any): error is MetaApiError {
     return error && error.error && typeof error.error.code === "number";
@@ -8,6 +44,9 @@ export class MetaApiErrorHandler {
 
   static async handleResponse(response: any): Promise<any> {
     const responseText = await response.text();
+    const retryAfterMs = parseRetryAfterMs(
+      response?.headers?.get?.("retry-after") ?? null
+    );
 
     if (!response.ok) {
       let errorData: any;
@@ -15,6 +54,12 @@ export class MetaApiErrorHandler {
       try {
         errorData = JSON.parse(responseText);
       } catch {
+        if (response.status === 429) {
+          throw new RateLimitError(
+            `HTTP 429: ${responseText}`,
+            retryAfterMs ?? 60000
+          );
+        }
         throw new MetaApiProcessingError(
           `HTTP ${response.status}: ${responseText}`,
           response.status
@@ -22,13 +67,28 @@ export class MetaApiErrorHandler {
       }
 
       if (this.isMetaApiError(errorData)) {
-        throw this.createSpecificError(errorData, response.status);
+        throw this.createSpecificError(
+          errorData,
+          response.status,
+          retryAfterMs
+        );
+      }
+
+      if (response.status === 429) {
+        throw new RateLimitError(
+          `HTTP 429: ${responseText}`,
+          retryAfterMs ?? 60000
+        );
       }
 
       throw new MetaApiProcessingError(
         `HTTP ${response.status}: ${responseText}`,
         response.status
       );
+    }
+
+    if (!responseText) {
+      return null;
     }
 
     try {
@@ -40,23 +100,24 @@ export class MetaApiErrorHandler {
 
   private static createSpecificError(
     errorData: MetaApiError,
-    _httpStatus: number
+    _httpStatus: number,
+    retryAfterMs?: number
   ): Error {
     const { error } = errorData;
     const { code, error_subcode, message, type } = error;
 
     // Rate limiting errors
     if (code === 17 && error_subcode === 2446079) {
-      return new RateLimitError(message, 300000); // 5 minutes
+      return new RateLimitError(message, retryAfterMs ?? 300000); // 5 minutes
     }
     if (code === 613 && error_subcode === 1487742) {
-      return new RateLimitError(message, 60000); // 1 minute
+      return new RateLimitError(message, retryAfterMs ?? 60000); // 1 minute
     }
     if (
       code === 4 &&
       (error_subcode === 1504022 || error_subcode === 1504039)
     ) {
-      return new RateLimitError(message, 300000); // 5 minutes
+      return new RateLimitError(message, retryAfterMs ?? 300000); // 5 minutes
     }
 
     // Authentication errors
@@ -98,9 +159,11 @@ export class MetaApiErrorHandler {
     if (error instanceof RateLimitError) return true;
     if (error instanceof MetaApplicationLimitError) return true;
     if (error instanceof MetaUserLimitError) return true;
+    if (isTransientNetworkError(error)) return true;
     if (error instanceof MetaApiProcessingError) {
       // Retry on server errors
-      return (error.httpStatus || 0) >= 500;
+      if ((error.httpStatus || 0) >= 500) return true;
+      return error.httpStatus === 429;
     }
     return false;
   }
@@ -120,10 +183,13 @@ export class MetaApiErrorHandler {
     if (error instanceof RateLimitError) return 3;
     if (error instanceof MetaApplicationLimitError) return 2;
     if (error instanceof MetaUserLimitError) return 2;
+    if (isTransientNetworkError(error)) return 3;
     if (
       error instanceof MetaApiProcessingError &&
       (error.httpStatus || 0) >= 500
     )
+      return 3;
+    if (error instanceof MetaApiProcessingError && error.httpStatus === 429)
       return 3;
     return 0; // No retry for other errors
   }
@@ -201,24 +267,21 @@ export async function retryWithBackoff<T>(
   let lastError: Error | undefined;
   let attempt = 0;
 
-  const maxRetries = 3; // Default max retries
-  
-  while (attempt <= maxRetries) {
+  while (true) {
     try {
       return await operation();
     } catch (error) {
       lastError = error as Error;
-      attempt++;
 
       if (!MetaApiErrorHandler.shouldRetry(lastError)) {
         throw lastError;
       }
 
       const maxRetriesForError = MetaApiErrorHandler.getMaxRetries(lastError);
+      attempt++;
       if (attempt > maxRetriesForError) {
-        throw new Error(
-          `${context} failed after ${maxRetriesForError} retries. Last error: ${lastError.message}`
-        );
+        lastError.message = `${context} failed after ${maxRetriesForError} retries: ${lastError.message}`;
+        throw lastError;
       }
 
       const delay = MetaApiErrorHandler.getRetryDelay(lastError, attempt);
@@ -229,7 +292,4 @@ export async function retryWithBackoff<T>(
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
-  
-  // This should never be reached, but TypeScript requires it
-  throw lastError || new Error(`${context} failed after exhausting all retries`);
 }

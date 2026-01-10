@@ -25,13 +25,52 @@ import type {
 
 export class MetaApiClient {
   private auth: AuthManager;
+  private requestTimeoutMs: number;
+  private debugEnabled: boolean;
 
-  constructor(auth?: AuthManager) {
+  constructor(
+    auth?: AuthManager,
+    options: { requestTimeoutMs?: number; debug?: boolean } = {}
+  ) {
     this.auth = auth || AuthManager.fromEnvironment();
+    const envTimeoutMs = Number(process.env.META_MCP_REQUEST_TIMEOUT_MS);
+    const optionTimeoutMs =
+      typeof options.requestTimeoutMs === "number" &&
+      Number.isFinite(options.requestTimeoutMs)
+        ? options.requestTimeoutMs
+        : undefined;
+    this.requestTimeoutMs =
+      optionTimeoutMs ?? (Number.isFinite(envTimeoutMs) ? envTimeoutMs : 30000);
+    this.debugEnabled =
+      typeof options.debug === "boolean"
+        ? options.debug
+        : process.env.META_MCP_DEBUG === "1" ||
+          (process.env.DEBUG?.includes("meta-mcp") ?? false);
   }
 
   get authManager(): AuthManager {
     return this.auth;
+  }
+
+  private debug(...args: unknown[]): void {
+    if (this.debugEnabled) {
+      console.log(...args);
+    }
+  }
+
+  private normalizeStatusFilter(
+    status?: string | string[]
+  ): string | undefined {
+    if (!status) return undefined;
+    return JSON.stringify(Array.isArray(status) ? status : [status]);
+  }
+
+  private appendQueryParams(
+    url: string,
+    params: Record<string, string>
+  ): string {
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}${new URLSearchParams(params).toString()}`;
   }
 
   private async makeRequest<T>(
@@ -41,7 +80,11 @@ export class MetaApiClient {
     accountId?: string,
     isWriteCall: boolean = false
   ): Promise<T> {
-    const url = `${this.auth.getBaseUrl()}/${this.auth.getApiVersion()}/${endpoint}`;
+    let url = `${this.auth.getBaseUrl()}/${this.auth.getApiVersion()}/${endpoint}`;
+    const appSecretProof = this.auth.getAppSecretProof();
+    if (appSecretProof) {
+      url = this.appendQueryParams(url, { appsecret_proof: appSecretProof });
+    }
 
     // Check rate limit if we have an account ID
     if (accountId) {
@@ -66,8 +109,31 @@ export class MetaApiClient {
         }
       }
 
-      const response = await fetch(url, requestOptions);
-      return MetaApiErrorHandler.handleResponse(response as any);
+      const controller =
+        this.requestTimeoutMs > 0 ? new AbortController() : undefined;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+      if (controller) {
+        requestOptions.signal = controller.signal;
+        timeoutId = setTimeout(
+          () => controller.abort(),
+          this.requestTimeoutMs
+        );
+      }
+
+      try {
+        const response = await fetch(url, requestOptions);
+        return MetaApiErrorHandler.handleResponse(response as any);
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          error.message = `Request timed out after ${this.requestTimeoutMs}ms: ${method} ${endpoint}`;
+        }
+        throw error;
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+      }
     }, `${method} ${endpoint}`);
   }
 
@@ -118,7 +184,7 @@ export class MetaApiClient {
   // Campaign Methods
   async getCampaigns(
     accountId: string,
-    params: PaginationParams & { status?: string[]; fields?: string[] } = {}
+    params: PaginationParams & { status?: string | string[]; fields?: string[] } = {}
   ): Promise<PaginatedResult<Campaign>> {
     const formattedAccountId = this.auth.getAccountId(accountId);
     const { status, fields, ...paginationParams } = params;
@@ -130,8 +196,9 @@ export class MetaApiClient {
       ...paginationParams,
     };
 
-    if (status) {
-      queryParams.effective_status = JSON.stringify([status]);
+    const statusFilter = this.normalizeStatusFilter(status);
+    if (statusFilter) {
+      queryParams.effective_status = statusFilter;
     }
 
     const query = this.buildQueryString(queryParams);
@@ -216,7 +283,7 @@ export class MetaApiClient {
     params: PaginationParams & {
       campaignId?: string;
       accountId?: string;
-      status?: string;
+      status?: string | string[];
       fields?: string[];
     } = {}
   ): Promise<PaginatedResult<AdSet>> {
@@ -240,8 +307,9 @@ export class MetaApiClient {
       ...paginationParams,
     };
 
-    if (status) {
-      queryParams.effective_status = JSON.stringify([status]);
+    const statusFilter = this.normalizeStatusFilter(status);
+    if (statusFilter) {
+      queryParams.effective_status = statusFilter;
     }
 
     const query = this.buildQueryString(queryParams);
@@ -306,14 +374,14 @@ export class MetaApiClient {
     const body = this.buildQueryString(requestData);
 
     // Enhanced debugging for ad set creation
-    console.log("=== AD SET CREATION DEBUG ===");
-    console.log("Campaign ID:", campaignId);
-    console.log("Account ID:", accountId);
-    console.log("Formatted Account ID:", formattedAccountId);
-    console.log("Request Data Object:", JSON.stringify(requestData, null, 2));
-    console.log("Request Body (URL-encoded):", body);
-    console.log("API Endpoint:", `${formattedAccountId}/adsets`);
-    console.log("===========================");
+    this.debug("=== AD SET CREATION DEBUG ===");
+    this.debug("Campaign ID:", campaignId);
+    this.debug("Account ID:", accountId);
+    this.debug("Formatted Account ID:", formattedAccountId);
+    this.debug("Request Data Object:", JSON.stringify(requestData, null, 2));
+    this.debug("Request Body (URL-encoded):", body);
+    this.debug("API Endpoint:", `${formattedAccountId}/adsets`);
+    this.debug("===========================");
 
     try {
       const result = await this.makeRequest<{ id: string }>(
@@ -324,54 +392,54 @@ export class MetaApiClient {
         true
       );
 
-      console.log("=== AD SET CREATION SUCCESS ===");
-      console.log("Created Ad Set ID:", result.id);
-      console.log("==============================");
+      this.debug("=== AD SET CREATION SUCCESS ===");
+      this.debug("Created Ad Set ID:", result.id);
+      this.debug("==============================");
 
       return result;
     } catch (error) {
-      console.log("=== AD SET CREATION ERROR ===");
-      console.log("Error object:", error);
+      this.debug("=== AD SET CREATION ERROR ===");
+      this.debug("Error object:", error);
 
       if (error instanceof Error) {
-        console.log("Error message:", error.message);
+        this.debug("Error message:", error.message);
 
         // Try to parse error response if it's JSON
         try {
           const errorData = JSON.parse(error.message);
-          console.log("Parsed error data:", JSON.stringify(errorData, null, 2));
+          this.debug("Parsed error data:", JSON.stringify(errorData, null, 2));
 
           if (errorData.error) {
-            console.log("Meta API Error Details:");
-            console.log("- Message:", errorData.error.message);
-            console.log("- Code:", errorData.error.code);
-            console.log("- Type:", errorData.error.type);
-            console.log("- Error Subcode:", errorData.error.error_subcode);
-            console.log("- FBTrace ID:", errorData.error.fbtrace_id);
+            this.debug("Meta API Error Details:");
+            this.debug("- Message:", errorData.error.message);
+            this.debug("- Code:", errorData.error.code);
+            this.debug("- Type:", errorData.error.type);
+            this.debug("- Error Subcode:", errorData.error.error_subcode);
+            this.debug("- FBTrace ID:", errorData.error.fbtrace_id);
 
             if (errorData.error.error_data) {
-              console.log(
+              this.debug(
                 "- Error Data:",
                 JSON.stringify(errorData.error.error_data, null, 2)
               );
             }
 
             if (errorData.error.error_user_title) {
-              console.log("- User Title:", errorData.error.error_user_title);
+              this.debug("- User Title:", errorData.error.error_user_title);
             }
 
             if (errorData.error.error_user_msg) {
-              console.log("- User Message:", errorData.error.error_user_msg);
+              this.debug("- User Message:", errorData.error.error_user_msg);
             }
           }
         } catch (parseError) {
-          console.log(
+          this.debug(
             "Could not parse error as JSON, raw message:",
             error.message
           );
         }
       }
-      console.log("============================");
+      this.debug("============================");
 
       throw error;
     }
@@ -544,13 +612,13 @@ export class MetaApiClient {
       status?: string;
     }
   ): Promise<Ad> {
-    console.log("=== CREATE AD DEBUG ===");
-    console.log("Ad Set ID:", adSetId);
-    console.log("Ad Data:", JSON.stringify(adData, null, 2));
+    this.debug("=== CREATE AD DEBUG ===");
+    this.debug("Ad Set ID:", adSetId);
+    this.debug("Ad Data:", JSON.stringify(adData, null, 2));
 
     const body = this.buildQueryString(adData);
-    console.log("Request body:", body);
-    console.log("API endpoint:", `${adSetId}/ads`);
+    this.debug("Request body:", body);
+    this.debug("API endpoint:", `${adSetId}/ads`);
 
     try {
       const result = await this.makeRequest<Ad>(
@@ -561,40 +629,40 @@ export class MetaApiClient {
         true
       );
 
-      console.log("Create ad success:", JSON.stringify(result, null, 2));
-      console.log("=====================");
+      this.debug("Create ad success:", JSON.stringify(result, null, 2));
+      this.debug("=====================");
       return result;
     } catch (error) {
-      console.log("=== CREATE AD ERROR ===");
-      console.log("Error object:", error);
+      this.debug("=== CREATE AD ERROR ===");
+      this.debug("Error object:", error);
 
       if (error instanceof Error) {
-        console.log("Error message:", error.message);
+        this.debug("Error message:", error.message);
 
         // Try to parse Meta API error response
         try {
           const errorData = JSON.parse(error.message);
-          console.log(
+          this.debug(
             "Parsed Meta API error:",
             JSON.stringify(errorData, null, 2)
           );
 
           if (errorData.error) {
-            console.log("Meta API Error Details:");
-            console.log("- Message:", errorData.error.message);
-            console.log("- Code:", errorData.error.code);
-            console.log("- Type:", errorData.error.type);
-            console.log("- Error Subcode:", errorData.error.error_subcode);
-            console.log("- FBTrace ID:", errorData.error.fbtrace_id);
+            this.debug("Meta API Error Details:");
+            this.debug("- Message:", errorData.error.message);
+            this.debug("- Code:", errorData.error.code);
+            this.debug("- Type:", errorData.error.type);
+            this.debug("- Error Subcode:", errorData.error.error_subcode);
+            this.debug("- FBTrace ID:", errorData.error.fbtrace_id);
           }
         } catch (parseError) {
-          console.log(
+          this.debug(
             "Could not parse error as JSON, raw message:",
             error.message
           );
         }
       }
-      console.log("=====================");
+      this.debug("=====================");
       throw error;
     }
   }
@@ -605,7 +673,7 @@ export class MetaApiClient {
       adsetId?: string;
       campaignId?: string;
       accountId?: string;
-      status?: string;
+      status?: string | string[];
       fields?: string[];
     } = {}
   ): Promise<PaginatedResult<Ad>> {
@@ -639,8 +707,9 @@ export class MetaApiClient {
       ...paginationParams,
     };
 
-    if (status) {
-      queryParams.effective_status = JSON.stringify([status]);
+    const statusFilter = this.normalizeStatusFilter(status);
+    if (statusFilter) {
+      queryParams.effective_status = statusFilter;
     }
 
     const query = this.buildQueryString(queryParams);
@@ -843,13 +912,13 @@ export class MetaApiClient {
     try {
       const formattedAccountId = this.auth.getAccountId(accountId);
 
-      console.log("=== IMAGE UPLOAD FROM URL DEBUG ===");
-      console.log("Account ID:", formattedAccountId);
-      console.log("Image URL:", imageUrl);
-      console.log("Image Name:", imageName);
+      this.debug("=== IMAGE UPLOAD FROM URL DEBUG ===");
+      this.debug("Account ID:", formattedAccountId);
+      this.debug("Image URL:", imageUrl);
+      this.debug("Image Name:", imageName);
 
       // Download the image from the URL
-      console.log("Downloading image from URL...");
+      this.debug("Downloading image from URL...");
       const imageResponse = await fetch(imageUrl);
 
       if (!imageResponse.ok) {
@@ -863,8 +932,8 @@ export class MetaApiClient {
         type: imageResponse.headers.get("content-type") || "image/jpeg",
       });
 
-      console.log("Image downloaded, size:", imageBuffer.byteLength, "bytes");
-      console.log("Content type:", imageResponse.headers.get("content-type"));
+      this.debug("Image downloaded, size:", imageBuffer.byteLength, "bytes");
+      this.debug("Content type:", imageResponse.headers.get("content-type"));
 
       // Generate filename if not provided
       const filename = imageName || `uploaded_image_${Date.now()}.jpg`;
@@ -874,8 +943,8 @@ export class MetaApiClient {
       formData.append("filename", imageBlob, filename);
       formData.append("access_token", this.auth.getAccessToken());
 
-      console.log("Uploading to Meta API...");
-      console.log(
+      this.debug("Uploading to Meta API...");
+      this.debug(
         "Endpoint:",
         `https://graph.facebook.com/v22.0/${formattedAccountId}/adimages`
       );
@@ -890,10 +959,10 @@ export class MetaApiClient {
       );
 
       const uploadResult = (await uploadResponse.json()) as any;
-      console.log("Upload response:", JSON.stringify(uploadResult, null, 2));
+      this.debug("Upload response:", JSON.stringify(uploadResult, null, 2));
 
       if (!uploadResponse.ok) {
-        console.log("Upload failed with status:", uploadResponse.status);
+        this.debug("Upload failed with status:", uploadResponse.status);
         throw new Error(`Image upload failed: ${JSON.stringify(uploadResult)}`);
       }
 
@@ -911,10 +980,10 @@ export class MetaApiClient {
         throw new Error("No hash found in image upload response");
       }
 
-      console.log("Image uploaded successfully!");
-      console.log("Image hash:", imageResult.hash);
-      console.log("Image URL:", imageResult.url);
-      console.log("===================================");
+      this.debug("Image uploaded successfully!");
+      this.debug("Image hash:", imageResult.hash);
+      this.debug("Image URL:", imageResult.url);
+      this.debug("===================================");
 
       return {
         hash: imageResult.hash,
@@ -922,9 +991,9 @@ export class MetaApiClient {
         name: filename,
       };
     } catch (error) {
-      console.log("=== IMAGE UPLOAD ERROR ===");
-      console.log("Error:", error);
-      console.log("=========================");
+      this.debug("=== IMAGE UPLOAD ERROR ===");
+      this.debug("Error:", error);
+      this.debug("=========================");
       throw error;
     }
   }

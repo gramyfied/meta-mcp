@@ -76,28 +76,28 @@ function checkNpmVersion() {
   }
 }
 
-function testMetaToken(token) {
+async function testMetaToken(token) {
   try {
     console.log("🔍 Testing Meta API token...");
-    const { execSync } = require("child_process");
+    const response = await fetch(
+      `https://graph.facebook.com/v23.0/me?access_token=${encodeURIComponent(token)}`
+    );
+    const result = await response.json();
 
-    // Use curl to test the token
-    const curlCommand = `curl -s -G -d "access_token=${token}" "https://graph.facebook.com/v23.0/me"`;
-    const result = execSync(curlCommand, { encoding: "utf8" });
-    const response = JSON.parse(result);
-
-    if (response.error) {
-      console.log(`❌ Token validation failed: ${response.error.message}`);
+    if (!response.ok || result.error) {
+      console.log(
+        `❌ Token validation failed: ${result.error?.message || "Unknown error"}`
+      );
       return false;
-    } else {
-      console.log(`✅ Token valid for user: ${response.name || response.id}`);
-      return true;
     }
+
+    console.log(`✅ Token valid for user: ${result.name || result.id}`);
+    return true;
   } catch (error) {
     console.log(
-      "⚠️  Could not validate token (curl not available). Proceeding anyway..."
+      "⚠️  Could not validate token (network error). Proceeding anyway..."
     );
-    return true; // Assume valid if we can't test
+    return true;
   }
 }
 
@@ -163,7 +163,7 @@ async function main() {
   }
 
   // Test the token
-  const tokenValid = testMetaToken(accessToken.trim());
+  const tokenValid = await testMetaToken(accessToken.trim());
   if (!tokenValid) {
     const proceed = await question(
       "⚠️  Token validation failed. Continue anyway? (y/N): "
