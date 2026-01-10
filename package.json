@@ -21,7 +21,9 @@
     "setup": "node scripts/setup-mcp.js",
     "setup:mcp": "node scripts/setup-mcp.js",
     "health-check": "node scripts/health-check.js",
-    "check": "node scripts/health-check.js"
+    "check": "node scripts/health-check.js",
+    "config": "tsx src/cli/index.ts config",
+    "doctor": "tsx src/cli/index.ts doctor"
   },
   "author": "Meta Ads MCP",
   "license": "MIT",

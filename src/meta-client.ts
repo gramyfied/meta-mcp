@@ -907,8 +907,12 @@ export class MetaApiClient {
   async uploadImageFromUrl(
     accountId: string,
     imageUrl: string,
-    imageName?: string
+    imageName?: string,
+    options?: { timeoutMs?: number; signal?: AbortSignal }
   ): Promise<{ hash: string; url: string; name: string }> {
+    // Use 5 minute timeout for uploads by default (longer than normal requests)
+    const uploadTimeoutMs = options?.timeoutMs ?? 300000;
+
     try {
       const formattedAccountId = this.auth.getAccountId(accountId);
 
@@ -916,80 +920,108 @@ export class MetaApiClient {
       this.debug("Account ID:", formattedAccountId);
       this.debug("Image URL:", imageUrl);
       this.debug("Image Name:", imageName);
+      this.debug("Timeout:", uploadTimeoutMs, "ms");
 
-      // Download the image from the URL
-      this.debug("Downloading image from URL...");
-      const imageResponse = await fetch(imageUrl);
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-      if (!imageResponse.ok) {
-        throw new Error(
-          `Failed to download image: ${imageResponse.status} ${imageResponse.statusText}`
-        );
+      // Combine with external signal if provided
+      if (options?.signal) {
+        options.signal.addEventListener("abort", () => controller.abort());
       }
 
-      const imageBuffer = await imageResponse.arrayBuffer();
-      const imageBlob = new Blob([imageBuffer], {
-        type: imageResponse.headers.get("content-type") || "image/jpeg",
-      });
+      if (uploadTimeoutMs > 0) {
+        timeoutId = setTimeout(() => controller.abort(), uploadTimeoutMs);
+      }
 
-      this.debug("Image downloaded, size:", imageBuffer.byteLength, "bytes");
-      this.debug("Content type:", imageResponse.headers.get("content-type"));
+      try {
+        // Download the image from the URL
+        this.debug("Downloading image from URL...");
+        const imageResponse = await fetch(imageUrl, {
+          signal: controller.signal,
+        });
 
-      // Generate filename if not provided
-      const filename = imageName || `uploaded_image_${Date.now()}.jpg`;
-
-      // Create FormData for upload
-      const formData = new FormData();
-      formData.append("filename", imageBlob, filename);
-      formData.append("access_token", this.auth.getAccessToken());
-
-      this.debug("Uploading to Meta API...");
-      this.debug(
-        "Endpoint:",
-        `https://graph.facebook.com/v22.0/${formattedAccountId}/adimages`
-      );
-
-      // Upload to Meta API
-      const uploadResponse = await fetch(
-        `https://graph.facebook.com/v23.0/${formattedAccountId}/adimages`,
-        {
-          method: "POST",
-          body: formData,
+        if (!imageResponse.ok) {
+          throw new Error(
+            `Failed to download image: ${imageResponse.status} ${imageResponse.statusText}`
+          );
         }
-      );
 
-      const uploadResult = (await uploadResponse.json()) as any;
-      this.debug("Upload response:", JSON.stringify(uploadResult, null, 2));
+        const imageBuffer = await imageResponse.arrayBuffer();
+        const imageBlob = new Blob([imageBuffer], {
+          type: imageResponse.headers.get("content-type") || "image/jpeg",
+        });
 
-      if (!uploadResponse.ok) {
-        this.debug("Upload failed with status:", uploadResponse.status);
-        throw new Error(`Image upload failed: ${JSON.stringify(uploadResult)}`);
+        this.debug("Image downloaded, size:", imageBuffer.byteLength, "bytes");
+        this.debug("Content type:", imageResponse.headers.get("content-type"));
+
+        // Generate filename if not provided
+        const filename = imageName || `uploaded_image_${Date.now()}.jpg`;
+
+        // Create FormData for upload
+        const formData = new FormData();
+        formData.append("filename", imageBlob, filename);
+        formData.append("access_token", this.auth.getAccessToken());
+
+        this.debug("Uploading to Meta API...");
+        this.debug(
+          "Endpoint:",
+          `https://graph.facebook.com/v23.0/${formattedAccountId}/adimages`
+        );
+
+        // Upload to Meta API with timeout
+        const uploadResponse = await fetch(
+          `https://graph.facebook.com/v23.0/${formattedAccountId}/adimages`,
+          {
+            method: "POST",
+            body: formData,
+            signal: controller.signal,
+          }
+        );
+
+        const uploadResult = (await uploadResponse.json()) as any;
+        this.debug("Upload response:", JSON.stringify(uploadResult, null, 2));
+
+        if (!uploadResponse.ok) {
+          this.debug("Upload failed with status:", uploadResponse.status);
+          throw new Error(`Image upload failed: ${JSON.stringify(uploadResult)}`);
+        }
+
+        // Extract image hash from response
+        const images = uploadResult.images;
+        if (!images || Object.keys(images).length === 0) {
+          throw new Error("No image hash returned from Meta API");
+        }
+
+        // Get the first (and usually only) image result
+        const imageKey = Object.keys(images)[0];
+        const imageResult = images[imageKey];
+
+        if (!imageResult.hash) {
+          throw new Error("No hash found in image upload response");
+        }
+
+        this.debug("Image uploaded successfully!");
+        this.debug("Image hash:", imageResult.hash);
+        this.debug("Image URL:", imageResult.url);
+        this.debug("===================================");
+
+        return {
+          hash: imageResult.hash,
+          url: imageResult.url || imageUrl,
+          name: filename,
+        };
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          error.message = `Image upload timed out after ${uploadTimeoutMs}ms`;
+        }
+        throw error;
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
       }
-
-      // Extract image hash from response
-      const images = uploadResult.images;
-      if (!images || Object.keys(images).length === 0) {
-        throw new Error("No image hash returned from Meta API");
-      }
-
-      // Get the first (and usually only) image result
-      const imageKey = Object.keys(images)[0];
-      const imageResult = images[imageKey];
-
-      if (!imageResult.hash) {
-        throw new Error("No hash found in image upload response");
-      }
-
-      this.debug("Image uploaded successfully!");
-      this.debug("Image hash:", imageResult.hash);
-      this.debug("Image URL:", imageResult.url);
-      this.debug("===================================");
-
-      return {
-        hash: imageResult.hash,
-        url: imageResult.url || imageUrl,
-        name: filename,
-      };
     } catch (error) {
       this.debug("=== IMAGE UPLOAD ERROR ===");
       this.debug("Error:", error);

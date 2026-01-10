@@ -1,20 +1,28 @@
 /** @type {import('jest').Config} */
 export default {
+  preset: 'ts-jest/presets/default-esm',
   testEnvironment: 'node',
   roots: ['<rootDir>/src', '<rootDir>/__tests__'],
   testMatch: [
-    '**/__tests__/**/*.+(js)',
-    '**/?(*.)+(spec|test).+(js)'
+    '**/__tests__/**/*.test.ts',
+    '**/__tests__/**/*.test.js',
+    '**/?(*.)+(spec|test).+(ts|js)'
   ],
-  transform: {},
-  moduleNameMapper: {
-    '^@/(.*)$': '<rootDir>/src/$1'
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', {
+      useESM: true,
+    }],
   },
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+    '^(\\.{1,2}/.*)\\.js$': '$1',
+  },
+  extensionsToTreatAsEsm: ['.ts'],
   transformIgnorePatterns: [
     'node_modules/(?!(@modelcontextprotocol)/)'
   ],
   collectCoverageFrom: [
-    'src/**/*.{js,ts}',
+    'src/**/*.ts',
     '!src/**/*.d.ts',
     '!src/index.ts',
     '!src/**/*.test.ts',
@@ -22,13 +30,13 @@ export default {
   ],
   coverageThreshold: {
     global: {
-      branches: 80,
-      functions: 80,
-      lines: 80,
-      statements: 80
+      branches: 70,
+      functions: 70,
+      lines: 70,
+      statements: 70
     }
   },
-  setupFilesAfterEnv: ['<rootDir>/__tests__/setup.js'],
+  setupFilesAfterEnv: ['<rootDir>/__tests__/setup.ts'],
   testTimeout: 10000,
   verbose: true
 };

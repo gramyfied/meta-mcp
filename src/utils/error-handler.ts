@@ -1,5 +1,12 @@
 import type { MetaApiError } from "../types/meta-api.js";
 import { RateLimitError } from "./rate-limiter.js";
+import type {
+  ErrorEnvelope,
+  SuccessEnvelope,
+  ParsedMetaError,
+  ErrorCode,
+} from "../types/error-envelope.js";
+import { ERROR_MESSAGES, META_ERROR_CODE_MAP } from "../types/error-envelope.js";
 
 const RETRYABLE_NETWORK_ERROR_CODES = new Set([
   "ECONNRESET",
@@ -260,14 +267,32 @@ export class MetaUserLimitError extends MetaApiProcessingError {
   }
 }
 
+export interface RetryOptions {
+  context?: string;
+  maxRetries?: number;
+  onRetry?: (error: Error, attempt: number, delayMs: number) => void;
+  signal?: AbortSignal;
+}
+
 export async function retryWithBackoff<T>(
   operation: () => Promise<T>,
-  context: string = "operation"
+  contextOrOptions: string | RetryOptions = "operation"
 ): Promise<T> {
+  const options: RetryOptions =
+    typeof contextOrOptions === "string"
+      ? { context: contextOrOptions }
+      : contextOrOptions;
+
+  const context = options.context || "operation";
   let lastError: Error | undefined;
   let attempt = 0;
 
   while (true) {
+    // Check for cancellation
+    if (options.signal?.aborted) {
+      throw new Error(`${context} was cancelled`);
+    }
+
     try {
       return await operation();
     } catch (error) {
@@ -277,7 +302,8 @@ export async function retryWithBackoff<T>(
         throw lastError;
       }
 
-      const maxRetriesForError = MetaApiErrorHandler.getMaxRetries(lastError);
+      const maxRetriesForError =
+        options.maxRetries ?? MetaApiErrorHandler.getMaxRetries(lastError);
       attempt++;
       if (attempt > maxRetriesForError) {
         lastError.message = `${context} failed after ${maxRetriesForError} retries: ${lastError.message}`;
@@ -285,11 +311,262 @@ export async function retryWithBackoff<T>(
       }
 
       const delay = MetaApiErrorHandler.getRetryDelay(lastError, attempt);
-      console.warn(
-        `${context} failed (attempt ${attempt}/${maxRetriesForError}), retrying in ${delay}ms: ${lastError.message}`
-      );
+
+      // Call onRetry callback if provided
+      if (options.onRetry) {
+        options.onRetry(lastError, attempt, delay);
+      } else {
+        console.warn(
+          `${context} failed (attempt ${attempt}/${maxRetriesForError}), retrying in ${delay}ms: ${lastError.message}`
+        );
+      }
 
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
+}
+
+/**
+ * Parse any error into a structured ParsedMetaError.
+ */
+export function parseMetaApiError(error: unknown): ParsedMetaError | null {
+  // Handle MetaApiProcessingError instances
+  if (error instanceof MetaApiProcessingError) {
+    return {
+      code: error.errorCode || 0,
+      subcode: error.errorSubcode,
+      type: error.errorType || "UnknownError",
+      message: error.message,
+      isTransient: MetaApiErrorHandler.shouldRetry(error),
+      retryAfterMs:
+        error instanceof RateLimitError ? error.retryAfterMs : undefined,
+    };
+  }
+
+  // Handle RateLimitError
+  if (error instanceof RateLimitError) {
+    return {
+      code: 17,
+      type: "RateLimitError",
+      message: error.message,
+      isTransient: true,
+      retryAfterMs: error.retryAfterMs,
+    };
+  }
+
+  // Handle plain objects (e.g., parsed JSON from Meta API)
+  if (typeof error === "object" && error !== null) {
+    const errorObj = error as Record<string, any>;
+
+    // Handle { error: { ... } } format from Meta API
+    if (errorObj.error && typeof errorObj.error === "object") {
+      const metaError = errorObj.error;
+      return {
+        code: metaError.code || 0,
+        subcode: metaError.error_subcode,
+        type: metaError.type || "UnknownError",
+        message: metaError.message || "Unknown error",
+        userTitle: metaError.error_user_title,
+        userMessage: metaError.error_user_msg,
+        fbtraceId: metaError.fbtrace_id,
+        isTransient: isTransientMetaError(metaError.code, metaError.error_subcode),
+        errorData: metaError.error_data,
+      };
+    }
+  }
+
+  // Handle Error instances with JSON in message
+  if (error instanceof Error) {
+    try {
+      const parsed = JSON.parse(error.message);
+      if (parsed.error) {
+        return parseMetaApiError(parsed);
+      }
+    } catch {
+      // Not JSON, return basic error info
+    }
+
+    return {
+      code: 0,
+      type: error.name,
+      message: error.message,
+      isTransient: isTransientNetworkError(error),
+    };
+  }
+
+  // Handle string errors
+  if (typeof error === "string") {
+    try {
+      const parsed = JSON.parse(error);
+      return parseMetaApiError(parsed);
+    } catch {
+      return {
+        code: 0,
+        type: "UnknownError",
+        message: error,
+        isTransient: false,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check if a Meta error code indicates a transient error.
+ */
+function isTransientMetaError(code?: number, subcode?: number): boolean {
+  if (!code) return false;
+
+  // Rate limit errors
+  if (code === 17 || code === 4 || code === 613) return true;
+
+  // Temporary service errors
+  if (code === 1 || code === 2) return true;
+
+  return false;
+}
+
+/**
+ * Get a human-readable error message for a Meta error code.
+ */
+export function getHumanReadableError(parsed: ParsedMetaError): string {
+  // Check for specific subcode messages first
+  if (parsed.subcode && ERROR_MESSAGES[parsed.subcode]) {
+    return ERROR_MESSAGES[parsed.subcode];
+  }
+
+  // Check for code-level messages
+  if (parsed.code && ERROR_MESSAGES[parsed.code]) {
+    return ERROR_MESSAGES[parsed.code];
+  }
+
+  // Use user-facing message if available
+  if (parsed.userMessage) {
+    return parsed.userMessage;
+  }
+
+  // Fall back to the original message
+  return parsed.message;
+}
+
+/**
+ * Map an error to a standardized ErrorCode.
+ */
+export function getErrorCode(error: Error): ErrorCode {
+  if (error instanceof MetaAuthError) {
+    return "META_AUTH_EXPIRED";
+  }
+
+  if (error instanceof MetaPermissionError) {
+    return "META_PERMISSION_DENIED";
+  }
+
+  if (error instanceof MetaValidationError) {
+    return "META_VALIDATION_ERROR";
+  }
+
+  if (error instanceof MetaApplicationLimitError) {
+    return "META_RATE_LIMIT_APP";
+  }
+
+  if (error instanceof MetaUserLimitError || error instanceof RateLimitError) {
+    return "META_RATE_LIMIT_USER";
+  }
+
+  if (error instanceof MetaApiProcessingError) {
+    const code = error.errorCode;
+    if (code && META_ERROR_CODE_MAP[code]) {
+      return META_ERROR_CODE_MAP[code];
+    }
+
+    if ((error.httpStatus || 0) >= 500) {
+      return "META_INTERNAL_ERROR";
+    }
+
+    if (error.httpStatus === 404) {
+      return "META_RESOURCE_NOT_FOUND";
+    }
+  }
+
+  if (error.name === "AbortError") {
+    return "META_TIMEOUT";
+  }
+
+  if (isTransientNetworkError(error)) {
+    return "META_NETWORK_ERROR";
+  }
+
+  return "MCP_INTERNAL_ERROR";
+}
+
+/**
+ * Convert an error to a structured ErrorEnvelope.
+ */
+export function toErrorEnvelope(
+  error: Error,
+  context?: Record<string, unknown>
+): ErrorEnvelope {
+  const code = getErrorCode(error);
+  const parsed = parseMetaApiError(error);
+  const isRetryable = MetaApiErrorHandler.shouldRetry(error);
+
+  let retryAfterMs: number | undefined;
+  if (error instanceof RateLimitError) {
+    retryAfterMs = error.retryAfterMs;
+  } else if (parsed?.retryAfterMs) {
+    retryAfterMs = parsed.retryAfterMs;
+  }
+
+  return {
+    success: false,
+    error: {
+      code,
+      message: parsed ? getHumanReadableError(parsed) : error.message,
+      retryable: isRetryable,
+      retryAfterMs: isRetryable ? retryAfterMs : undefined,
+      details:
+        error instanceof MetaApiProcessingError
+          ? {
+              httpStatus: error.httpStatus,
+              metaErrorCode: error.errorCode,
+              metaErrorSubcode: error.errorSubcode,
+              metaErrorType: error.errorType,
+              fbtraceId: parsed?.fbtraceId,
+            }
+          : undefined,
+      context,
+    },
+  };
+}
+
+/**
+ * Create a success envelope.
+ */
+export function toSuccessEnvelope<T>(
+  data: T,
+  requestId?: string
+): SuccessEnvelope<T> {
+  return {
+    success: true,
+    data,
+    requestId,
+  };
+}
+
+/**
+ * Format an envelope as an MCP tool response.
+ */
+export function formatToolResponse(
+  envelope: ErrorEnvelope | SuccessEnvelope<unknown>
+): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(envelope, null, 2),
+      },
+    ],
+    isError: envelope.success === false ? true : undefined,
+  };
 }
