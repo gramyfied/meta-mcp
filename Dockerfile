@@ -37,6 +37,9 @@ FROM base AS production
 # Copy built application from build stage
 COPY --from=build /app/build ./build
 
+# Copy any other necessary files (like docs if needed at runtime)
+COPY docs/ ./docs/
+
 # Create a non-root user
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001

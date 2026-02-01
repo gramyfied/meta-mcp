@@ -1,4 +1,3 @@
-import { createHmac } from "crypto";
 import type { MetaApiConfig } from "../types/meta-api.js";
 
 export class AuthManager {
@@ -41,27 +40,10 @@ export class AuthManager {
     };
   }
 
-  getAppSecretProof(accessToken: string = this.getAccessToken()): string | undefined {
-    if (!this.config.appSecret) {
-      return undefined;
-    }
-
-    return createHmac("sha256", this.config.appSecret)
-      .update(accessToken)
-      .digest("hex");
-  }
-
   async validateToken(): Promise<boolean> {
     try {
-      const params = new URLSearchParams({
-        access_token: this.getAccessToken(),
-      });
-      const appSecretProof = this.getAppSecretProof();
-      if (appSecretProof) {
-        params.set("appsecret_proof", appSecretProof);
-      }
       const response = await fetch(
-        `${this.getBaseUrl()}/${this.getApiVersion()}/me?${params.toString()}`
+        `${this.getBaseUrl()}/${this.getApiVersion()}/me?access_token=${this.getAccessToken()}`
       );
       return response.ok;
     } catch (error) {
@@ -339,16 +321,8 @@ export class AuthManager {
     isValid: boolean;
   }> {
     try {
-      const params = new URLSearchParams({
-        input_token: this.getAccessToken(),
-        access_token: this.getAccessToken(),
-      });
-      const appSecretProof = this.getAppSecretProof();
-      if (appSecretProof) {
-        params.set("appsecret_proof", appSecretProof);
-      }
       const response = await fetch(
-        `${this.getBaseUrl()}/${this.getApiVersion()}/debug_token?${params.toString()}`
+        `${this.getBaseUrl()}/${this.getApiVersion()}/debug_token?input_token=${this.getAccessToken()}&access_token=${this.getAccessToken()}`
       );
 
       if (!response.ok) {
