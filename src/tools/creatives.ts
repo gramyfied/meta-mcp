@@ -426,7 +426,7 @@ export function registerCreativeTools(
                 isError: true,
               };
             }
-          } catch (parseError) {
+          } catch {
             console.log(
               "Could not parse error as JSON, raw message:",
               error.message
@@ -1121,7 +1121,7 @@ export function registerCreativeTools(
                 "Image URL should point to a valid image file (.jpg, .png, .gif, .webp)"
               );
             }
-          } catch (error) {
+          } catch {
             validation.checks.media_validation.issues.push(
               "Invalid image URL format"
             );
@@ -1145,7 +1145,7 @@ export function registerCreativeTools(
             validation.checks.url_accessibility.status = "success";
             validation.checks.url_accessibility.details =
               "Destination URL format is valid";
-          } catch (error) {
+          } catch {
             validation.checks.url_accessibility.issues.push(
               "Invalid destination URL format"
             );
@@ -1955,7 +1955,7 @@ export function registerCreativeTools(
         // Validate image URL
         try {
           new URL(image_url);
-        } catch (error) {
+        } catch {
           return {
             content: [
               {

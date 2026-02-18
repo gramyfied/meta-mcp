@@ -40,7 +40,7 @@ async function main() {
     try {
       const currentToken = await auth.refreshTokenIfNeeded();
       console.error("✅ Token validation and refresh successful");
-      console.error(`🔑 Token ready: ${currentToken.substring(0, 20)}...`);
+      // Ne jamais logger de tokens (meme partiellement) dans stderr/stdout.
 
       // Log OAuth configuration status
       const hasOAuthConfig = !!(

@@ -3,21 +3,24 @@
 /**
  * List All Tools Script
  * 
- * This script lists all tool names from the source files for easy reference
+ * This script lists all tool names by scanning the server tool files.
+ *
+ * Note: In this repo, the runtime entrypoint uses the compiled build in `build/src/`.
+ * Some TS source files may not exist, so we default to scanning `build/src/tools/*.js`.
  */
 
 import { readFileSync } from 'fs';
-import { join } from 'path';
 
 console.log("🛠️  Complete Tool List");
 console.log("====================");
 
 const toolFiles = [
-  'src/tools/campaigns.ts',
-  'src/tools/analytics.ts',
-  'src/tools/audiences.ts',
-  'src/tools/creatives.ts',
-  'src/tools/oauth.ts'
+  // Runtime files (compiled)
+  'build/src/tools/campaigns.js',
+  'build/src/tools/analytics.js',
+  'build/src/tools/audiences.js',
+  'build/src/tools/creatives.js',
+  'build/src/tools/oauth.js',
 ];
 
 let totalTools = 0;
@@ -32,7 +35,7 @@ toolFiles.forEach(file => {
       return nameMatch ? nameMatch[1] : '';
     }).filter(name => name);
     
-    console.log(`\n📁 ${file.replace('src/tools/', '').replace('.ts', '').toUpperCase()} (${toolNames.length} tools):`);
+    console.log(`\n📁 ${file.replace('build/src/tools/', '').replace('src/tools/', '').replace(/\.(ts|js)$/, '').toUpperCase()} (${toolNames.length} tools):`);
     toolNames.forEach(name => {
       console.log(`   • ${name}`);
     });

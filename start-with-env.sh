@@ -22,9 +22,7 @@ fi
 
 set +a
 
-# Debug : afficher si le token est chargé (sur stderr pour ne pas polluer stdout/MCP)
-echo "🔑 META_ACCESS_TOKEN: ${META_ACCESS_TOKEN:0:30}..." >&2
-echo "📱 META_APP_ID: $META_APP_ID" >&2
+# Ne jamais logger de secrets (tokens) dans stdout/stderr.
 
 # Changer de répertoire et lancer le BUILD COMPILÉ (pas tsx/src)
 cd /root/meta-mcp
