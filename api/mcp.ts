@@ -700,7 +700,8 @@ const handler = async (req: Request) => {
               "LOWEST_COST_WITH_BID_CAP",
               "COST_CAP",
             ])
-            .optional(),
+            .optional()
+            .describe("Stratégie d'enchère. La limite d'enchère est déterminée automatiquement par Facebook."),
           status: z
             .enum(["ACTIVE", "PAUSED"])
             .optional()
@@ -889,6 +890,108 @@ const handler = async (req: Request) => {
                             ? "This appears to be a budget issue. Try increasing the daily budget to at least $5 (500 cents)."
                             : "Check the error message above for specific guidance.",
                       },
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+
+      server.tool(
+        "update_ad_set",
+        "Update an existing ad set. Change bid strategy, bid amount, budget, status, or name.",
+        {
+          ad_set_id: z.string().describe("The ad set ID to update"),
+          bid_strategy: z
+            .enum([
+              "LOWEST_COST_WITHOUT_CAP",
+              "LOWEST_COST_WITH_BID_CAP",
+              "COST_CAP",
+            ])
+            .optional()
+            .describe("Stratégie d'enchère. La limite d'enchère est déterminée automatiquement par Facebook."),
+          bid_amount: z
+            .number()
+            .optional()
+            .describe("Bid amount in cents. Set to 0 to remove bid cap."),
+          daily_budget: z
+            .number()
+            .optional()
+            .describe("Daily budget in cents"),
+          lifetime_budget: z
+            .number()
+            .optional()
+            .describe("Lifetime budget in cents"),
+          status: z
+            .enum(["ACTIVE", "PAUSED"])
+            .optional()
+            .describe("Ad set status"),
+          name: z.string().optional().describe("New name for the ad set"),
+        },
+        async ({ ad_set_id, bid_strategy, bid_amount, daily_budget, lifetime_budget, status, name }) => {
+          try {
+            if (!authHeader) throw new Error("Authentication required");
+            const user = await UserAuthManager.authenticateUser(authHeader);
+            if (!user) throw new Error("Invalid authentication token");
+            const auth = await UserAuthManager.createUserAuthManager(
+              user.userId
+            );
+            if (!auth)
+              throw new Error("Failed to initialize user authentication");
+
+            const metaClient = new MetaApiClient(auth);
+            await auth.refreshTokenIfNeeded();
+
+            const updates: Record<string, any> = {};
+            if (bid_strategy) updates.bid_strategy = bid_strategy;
+            if (bid_amount !== undefined) {
+              if (bid_amount === 0) {
+                // Pour supprimer le bid_amount, on passe en LOWEST_COST_WITHOUT_CAP
+                updates.bid_strategy = updates.bid_strategy || "LOWEST_COST_WITHOUT_CAP";
+              } else {
+                updates.bid_amount = bid_amount;
+              }
+            }
+            if (daily_budget) updates.daily_budget = daily_budget;
+            if (lifetime_budget) updates.lifetime_budget = lifetime_budget;
+            if (status) updates.status = status;
+            if (name) updates.name = name;
+
+            const result = await metaClient.updateAdSet(ad_set_id, updates);
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      success: true,
+                      ad_set_id,
+                      updates_applied: updates,
+                      result,
+                      message: "Ad set updated successfully",
+                    },
+                    null,
+                    2
+                  ),
+                },
+              ],
+            };
+          } catch (error) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    {
+                      success: false,
+                      error: error.message,
+                      ad_set_id,
                     },
                     null,
                     2
